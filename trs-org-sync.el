@@ -1,16 +1,19 @@
+(require 'org)
+
 (defun trs/org-sync ()
   "Change other entries with the same SYNCID as the current entry such that they match the current entry."
   (interactive)
   (let ((changed-buffer (current-buffer))
-	(current-id (org-entry-get (point) "SYNCID")))
-    (save-excursion
-      (trs/goto-entry-beginning)
-      (setq org-changed-subtree (org-get-subtree))
+	(current-id (org-entry-get (point) "SYNCID" t)))
+      (setq org-changed-subtree (trs/org-get-subtree))
       (if current-id
 ;  This is legacy code.  Don't use unless you know what you are doing.
 ;	    (trs/org-sync-search-and-replace-using-agenda current-id)
-	  (trs/org-sync-search-and-replace current-id changed-buffer org-changed-subtree))
-      (switch-to-buffer changed-buffer))))
+	  (trs/org-sync-search-and-replace current-id changed-buffer org-changed-subtree)
+	(if (called-interactively-p)
+	    (message "This item is not set up to sync.  Please run 'trs/org-syncid-get-create' then copy the entry to other places")))
+      ;(switch-to-buffer changed-buffer)
+      ))
 
 (defun trs/org-sync-search-and-replace (current-id changed-buffer org-changed-subtree)
   (let ((org-search-files (org-agenda-files nil 'ifmode))
@@ -18,39 +21,53 @@
 	(org-search-file-buffer nil)
 	(updated-entry-indent-level nil))
     (while (setq org-search-file (pop org-search-files))
-      (setq org-search-file-buffer (get-file-buffer org-search-file))
+      (setq org-search-file-buffer (make-indirect-buffer (get-file-buffer org-search-file) "delete-me.org"))
       (unless (eq changed-buffer org-search-file-buffer) 
 	(switch-to-buffer org-search-file-buffer)
+	(org-mode)
+	(outline-show-all)
 	(save-excursion
 	  (goto-char (point-min))
 	  (while (re-search-forward current-id nil t)
-	    (read-from-minibuffer "Hit enter is this an entry?")
+	    (org-show-subtree)
+;	    (read-from-minibuffer "Hit enter is this an entry?")
+	    (org-narrow-to-subtree)
+;	    (read-from-minibuffer "Before entry level")
 	    (setq updated-entry-indent-level (org-current-level))
-	    (trs/goto-entry-beginning)
+;	    (read-from-minibuffer "Afterentry level")
 	    (trs/org-sync-update-entry org-changed-subtree)
-	    (trs/org-sync-correct-updated-entry-indentation updated-entry-indent-level)
-	    (read-from-minibuffer "replaced entry")
-	    (org-end-of-subtree)))))))
+;	    (read-from-minibuffer "After update entry")
+	    (let ((following-subtrees (buffer-substring-no-properties (point) (point-max))))
+	      (trs/org-sync-correct-updated-entry-indentation updated-entry-indent-level)
+	      (org-end-of-subtree)
+	      (delete-blank-lines)
+	      (widen)
+	      )))
+	(kill-buffer org-search-file-buffer)))))
+
+;; (defun trs/org-sync-correct-updated-entry-indentation (updated-entry-indent-level)
+;;   (read-from-minibuffer "set the indent level"))
 
 (defun trs/org-sync-correct-updated-entry-indentation (updated-entry-indent-level)
   "Correct the indentation level of the new item so that it matched the level of the item before it was updated."
+  (goto-char (point-min))
   (while (not (eq (org-current-level) updated-entry-indent-level))
     (if (< updated-entry-indent-level (org-current-level))
 	(org-promote-subtree)
-      (org-demote-subtree))))
+      (org-demote-subtree)))
+  ;(read-from-minibuffer "how's the indent?")
+  (widen)
+					;(read-from-minibuffer "how's the indent?")
+  )
 
 (defun trs/org-sync-update-entry (org-changed-subtree)
   "Update the entry by replacing it with the new entry in the kill-ring.  TODO:  Use a register for this."
-  (let ((entry-beginning (point)))
-    (org-end-of-subtree)
-    (read-from-minibuffer "Hit enter end of subtree")
-    (delete-region entry-beginning (point))
-    (read-from-minibuffer "Hit enter before yank")
-					;    (yank)
-    (insert org-changed-subtree)
-    (message "before mark")
-    (goto-char entry-beginning)
-    (message "after mark")))
+  (org-mark-subtree)
+    ;(read-from-minibuffer "Subtree marked")
+    (delete-region (point-min) (point-max))
+    ;(read-from-minibuffer "Hit enter before yank")
+    (insert org-changed-subtree))
+
 
 (defun trs/goto-entry-beginning ()
   "Place the cursor at the begniing of the entry in column 0"
@@ -81,7 +98,7 @@ Note that this code was basically lifted from org-id.el with only minor modifica
 	(org-id-add-location id (buffer-file-name (buffer-base-buffer)))
 	id)))))
 
-(defun org-get-subtree (&optional n)
+(defun trs/org-get-subtree (&optional n)
   "Get and return the current subtree into a register.
 With arg N, get this many sequential subtrees."
 ;  (interactive "p")
@@ -107,9 +124,17 @@ With arg N, get this many sequential subtrees."
     (when (> end beg)
       (buffer-substring-no-properties beg end))))
 
-(defun trs/org-sync-switch-back-to-agenda (&rest r)
-  "Simple function to switch back to agenda when trs/prg-sync functions are called from there"
-  (switch-to-buffer org-agenda-buffer))
+(defun trs/org-sync-file ()
+  (interactive)
+    ;; Sync current entry first.  After that everything becomes identical to the entry furthest toward the end in the same file.
+  (save-excursion
+    (trs/org-sync)
+    (goto-char (point-min))
+    (while (re-search-forward "SYNCID" nil t)
+      (trs/org-sync)
+      (org-end-of-subtree))))
+	     
+
 
 (defun trs/org-sync-property-state-change (&rest r)
   "Run trs/org-sync.  Used with org-trigger-hook to run trs/org-sync with any property state change."
@@ -117,25 +142,38 @@ With arg N, get this many sequential subtrees."
 
 (defun trs/org-sync-agenda-property-state-change (&rest r)
   "Run trs/org-sync.  Used with org-trigger-hook to run trs/org-sync with any property state change."
-  (org-agenda-goto)
-  (trs/org-sync)
-  (switch-to-buffer org-agenda-buffer)
-  (move-beginning-of-line nil))
+  (save-excursion
+    (trs/org-sync)))
 
+(defun trs/after-manual-save-actions ()
+  "Used in `after-save-hook'."
+  (when (and (eq major-mode 'org-mode) (memq this-command '(save-buffer write-file)))
+    (trs/org-sync)))
+;    (trs/org-sync-file)))
 
-;(add-hook 'org-after-todo-state-change-hook 'trs/org-sync)
-(add-hook 'org-after-tags-change-hook 'trs/org-sync)
-;(add-hook 'org-trigger-hook 'trs/org-sync-property-state-change)
-(add-hook 'org-property-changed-functions 'trs/org-sync-property-state-change)
+(add-hook 'after-save-hook 'trs/after-manual-save-actions)
 
-(advice-add 'org-agenda-todo :after #'trs/org-sync-switch-back-to-agenda)
-(advice-add 'org-agenda-priority-up :after #'trs/org-sync-agenda-property-state-change)
-(advice-add 'org-agenda-priority-down :after #'trs/org-sync-agenda-property-state-change)
-(advice-add 'org-agenda-priority :after #'trs/org-sync-agenda-property-state-change)
-(advice-add 'org-agenda-set-tags :after #'trs/org-sync-agenda-property-state-change)
-(advice-add 'org-agenda-add-note :after #'trs/org-sync-agenda-property-state-change)
-(advice-add 'org-attach :after #'trs/org-sync-agenda-property-state-change)
-(advice-add 'org-agenda-schedule :after #'trs/org-sync-agenda-property-state-change)
+(add-hook 'after-save-hook 'trs/after-manual-save-actions)
+(define-key org-mode-map (kbd "s-i") 'trs/org-sync)
+
+;; Disbled the hooks and advice below until I get this indent thing worked out.
+;; (add-hook 'org-after-tags-change-hook 'trs/org-sync)
+ (add-hook 'org-trigger-hook 'trs/org-sync-property-state-change)
+;; (add-hook 'org-property-changed-functions 'trs/org-sync-property-state-change)
+
+;; (advice-add 'org-agenda-todo :after #'trs/org-sync-switch-back-to-agenda)
+;; (advice-add 'org-agenda-priority-up :after #'trs/org-sync-agenda-property-state-change)
+;; (advice-add 'org-agenda-priority-down :after #'trs/org-sync-agenda-property-state-change)
+;; (advice-add 'org-agenda-priority :after #'trs/org-sync-agenda-property-state-change)
+;; (advice-add 'org-agenda-set-tags :after #'trs/org-sync-agenda-property-state-change)
+;; (advice-add 'org-agenda-add-note :after #'trs/org-sync-agenda-property-state-change)
+;; (advice-add 'org-attach :after #'trs/org-sync-agenda-property-state-change)
+;; (advice-add 'org-agenda-schedule :after #'trs/org-sync-agenda-property-state-change)
+
+(advice-add 'org-priority-up :after #'trs/org-sync-property-state-change)
+(advice-add 'org-priority-down :after #'trs/org-sync-property-state-change)
+(advice-add 'org-priority :after #'trs/org-sync-property-state-change)
+(advice-add 'org-set-tags-command :after #''trs/org-sync-property-state-change)
 
 
 ;; Everything bleow this point is legacy code
