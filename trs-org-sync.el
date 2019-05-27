@@ -1,52 +1,73 @@
 (require 'org)
 
+(defcustom trs/org-sync-with-property-change t
+  "If non-nil sync current item automatically with a change in the following properties:  TODO state, priority and tags"
+  :group 'org-syncid
+  :type 'file)
+
+(defcustom trs/org-sync-with-interactive-save t
+  "If non-nil sync current item when the file is saved interactively."
+  :group 'org-syncid
+  :type 'file)
+
+
+(defcustom org-syncid-locations-file (convert-standard-filename
+				  (concat user-emacs-directory ".org-sync-syncids"))
+  "The file for remembering in which file a SYNCID was defined."
+  :group 'org-syncid
+  :type 'file)
+
+
 (defun trs/org-sync ()
   "Change other entries with the same SYNCID as the current entry such that they match the current entry."
   (interactive)
   (let ((changed-buffer (current-buffer))
-	(current-id (org-entry-get (point) "SYNCID" t)))
+	(current-id (org-entry-get (point) "SYNCID" t))
+	(id (org-entry-get (point) "ID" t)))
+    (message id)
+    (save-window-excursion 
       (setq org-changed-subtree (trs/org-get-subtree))
-      (if current-id
-;  This is legacy code.  Don't use unless you know what you are doing.
-;	    (trs/org-sync-search-and-replace-using-agenda current-id)
-	  (trs/org-sync-search-and-replace current-id changed-buffer org-changed-subtree)
+      (if (and current-id id)
+	  (trs/org-sync-search-and-replace current-id id changed-buffer org-changed-subtree)
 	(if (called-interactively-p)
-	    (message "This item is not set up to sync.  Please run 'trs/org-syncid-get-create' then copy the entry to other places")))
-      ;(switch-to-buffer changed-buffer)
-      ))
+	    (message "This item is not set up to sync.  Please run 'trs/org-sync-syncid-get-create' then copy the entry to other places"))))))
 
-(defun trs/org-sync-search-and-replace (current-id changed-buffer org-changed-subtree)
-  (let ((org-search-files (org-agenda-files nil 'ifmode))
-	(org-search-file nil)
+(defun trs/org-sync-get-sync-locations-from-file ()
+  "Get the list of id-syncid pairs from 'org-syncid-locations-file' and return them"
+  (with-temp-buffer
+    (insert-file-contents org-syncid-locations-file)
+    (read (current-buffer))))
+
+(defun trs/org-sync-search-and-replace (current-id id changed-buffer org-changed-subtree)
+  "Go to the locations where entries with the 'current-id' syncid property and update them by replacing them with the 'org-changed-subtree'"
+  (let ((org-search-file nil)
 	(org-search-file-buffer nil)
-	(updated-entry-indent-level nil))
-    (while (setq org-search-file (pop org-search-files))
-      (setq org-search-file-buffer (make-indirect-buffer (get-file-buffer org-search-file) "delete-me.org"))
-      (unless (eq changed-buffer org-search-file-buffer) 
-	(switch-to-buffer org-search-file-buffer)
-	(org-mode)
-	(outline-show-all)
-	(save-excursion
-	  (goto-char (point-min))
-	  (while (re-search-forward current-id nil t)
-	    (org-show-subtree)
-;	    (read-from-minibuffer "Hit enter is this an entry?")
-	    (org-narrow-to-subtree)
-;	    (read-from-minibuffer "Before entry level")
-	    (setq updated-entry-indent-level (org-current-level))
-;	    (read-from-minibuffer "Afterentry level")
-	    (trs/org-sync-update-entry org-changed-subtree)
-;	    (read-from-minibuffer "After update entry")
-	    (let ((following-subtrees (buffer-substring-no-properties (point) (point-max))))
-	      (trs/org-sync-correct-updated-entry-indentation updated-entry-indent-level)
-	      (org-end-of-subtree)
-	      (delete-blank-lines)
-	      (widen)
-	      )))
-	(kill-buffer org-search-file-buffer)))))
-
-;; (defun trs/org-sync-correct-updated-entry-indentation (updated-entry-indent-level)
-;;   (read-from-minibuffer "set the indent level"))
+	(updated-entry-indent-level nil)
+	(following-subtrees nil)
+	(org-sync-locations (trs/org-sync-get-sync-locations-from-file)))
+      (dolist (pair org-sync-locations)
+	(if (equal current-id (cdr pair))
+	    (progn
+	      (org-id-goto (car pair))
+	      (setq org-search-file-buffer (make-indirect-buffer (get-file-buffer (buffer-name)) "delete-me.org"))
+	      (unwind-protect 
+		  (unless (eq changed-buffer org-search-file-buffer) 
+		    (switch-to-buffer org-search-file-buffer)
+		    (org-mode)
+		    (outline-show-all)
+		    (goto-char (point-min))
+		    (while (re-search-forward current-id nil t)
+		      (org-show-subtree)
+		      (org-narrow-to-subtree)
+		      (setq updated-entry-indent-level (org-current-level))
+		      (trs/org-sync-update-entry org-changed-subtree)
+		      (org-entry-put (point) "ID" (car pair))
+		      (setq following-subtrees (buffer-substring-no-properties (point) (point-max)))
+		      (trs/org-sync-correct-updated-entry-indentation updated-entry-indent-level)
+		      (org-end-of-subtree)
+		      (delete-blank-lines)
+		      (widen)))
+		  (kill-buffer org-search-file-buffer)))))))
 
 (defun trs/org-sync-correct-updated-entry-indentation (updated-entry-indent-level)
   "Correct the indentation level of the new item so that it matched the level of the item before it was updated."
@@ -55,31 +76,67 @@
     (if (< updated-entry-indent-level (org-current-level))
 	(org-promote-subtree)
       (org-demote-subtree)))
-  ;(read-from-minibuffer "how's the indent?")
   (widen)
-					;(read-from-minibuffer "how's the indent?")
   )
 
 (defun trs/org-sync-update-entry (org-changed-subtree)
-  "Update the entry by replacing it with the new entry in the kill-ring.  TODO:  Use a register for this."
+  "Update the entry by replacing it with 'org-changed-sybtree'."
   (org-mark-subtree)
-    ;(read-from-minibuffer "Subtree marked")
-    (delete-region (point-min) (point-max))
-    ;(read-from-minibuffer "Hit enter before yank")
-    (insert org-changed-subtree))
+  (delete-region (point-min) (point-max))
+  (insert org-changed-subtree))
 
+(defun trs/org-sync-rebuild-database ()
+  "Rebuild the 'org-syncid-locations-file'."
+  (interactive)
+  (let ((org-search-files (org-agenda-files nil 'ifmode))
+	(org-search-file nil)
+	(org-search-file-buffer nil)
+	(org-sync-locations '(" " " ")))
+    (save-window-excursion
+      (trs/org-sync-write-syncid-locations-to-file org-syncid-locations-file org-sync-locations)
+      (while (setq org-search-file (pop org-search-files))
+	(setq org-search-file-buffer (make-indirect-buffer (get-file-buffer org-search-file) "delete-me.org"))
+	(unwind-protect
+	    (progn
+	      (switch-to-buffer org-search-file-buffer)
+	      (org-mode)
+	      (outline-show-all)
+	      (goto-char (point-min))
+	      (while (re-search-forward "SYNCID:" nil t)
+		(trs/org-sync-syncid-get-create))
+	      )
+	  (kill-buffer org-search-file-buffer))
+	  )
+	(let ((org-sync-locations (trs/org-sync-get-sync-locations-from-file)))
+	  (pop org-sync-locations)
+	  (pop org-sync-locations)
+	  (trs/org-sync-write-syncid-locations-to-file org-syncid-locations-file org-sync-locations)))))
+
+(defun trs/org-sync-write-syncid-locations-to-file (org-syncid-locations-file org-sync-locations)
+  "Write 'org-sync-locations' to 'org-syncid-locations-file'"
+  (with-temp-file org-syncid-locations-file
+	  (print org-sync-locations (current-buffer))))
 
 (defun trs/goto-entry-beginning ()
-  "Place the cursor at the begniing of the entry in column 0"
+  "Place the cursor at the beginning of the entry in column 0"
   (interactive)
   (if (not (looking-at "^*"))
       (search-backward-regexp "^*")))
 
-(defun trs/org-syncid-get-create ()
+(defun trs/org-sync-syncid-get-create ()
+  "Add the (id . syncid) pair to the 'org-syncid-locations' list.  Save 'org-sync-locations' to 'org-sync-locations-file'.  If no syncid and/or id exists, create them.'"
   (interactive)
-  (trs/org-syncid-get (point) 'create))
+  (let ((syncid (trs/org-sync-syncid-get (point) 'create))
+	(id (org-id-get (point) 'create))
+	(org-sync-locations (trs/org-sync-get-sync-locations-from-file)))
+    (if (not (member (cons id syncid) org-sync-locations))
+	(progn
+	  (message "3")
+	  (push (cons id syncid) (cdr (last org-sync-locations)))
+	  (message "4")
+	  (trs/org-sync-write-syncid-locations-to-file org-syncid-locations-file org-sync-locations)))))
 
-(defun trs/org-syncid-get (&optional pom create prefix)
+(defun trs/org-sync-syncid-get (&optional pom create prefix)
   "Get the SYNCID property of the entry at point-or-marker POM.
 If POM is nil, refer to the entry at point.
 If the entry does not have an SYNCID, the function returns nil.
@@ -101,20 +158,16 @@ Note that this code was basically lifted from org-id.el with only minor modifica
 (defun trs/org-get-subtree (&optional n)
   "Get and return the current subtree into a register.
 With arg N, get this many sequential subtrees."
-;  (interactive "p")
+					;  (interactive "p")
   (let (beg end folded (beg0 (point)))
-    ;; (if (called-interactively-p 'any)
-    ;; 	(org-back-to-heading nil) ; take what looks like a subtree
-      (org-back-to-heading t)
-;      ) ; take what is really there
+    (org-back-to-heading t)
     (setq beg (point))
     (skip-chars-forward " \t\r\n")
     (save-match-data
-	(save-excursion (outline-end-of-heading)
-			(setq folded (org-invisible-p)))
-	(ignore-errors (org-forward-heading-same-level (1- n) t))
-	(org-end-of-subtree t t))
-    ;; Include the end of an inlinetask
+      (save-excursion (outline-end-of-heading)
+		      (setq folded (org-invisible-p)))
+      (ignore-errors (org-forward-heading-same-level (1- n) t))
+      (org-end-of-subtree t t))
     (when (and (featurep 'org-inlinetask)
 	       (looking-at-p (concat (org-inlinetask-outline-regexp)
 				     "END[ \t]*$")))
@@ -125,98 +178,84 @@ With arg N, get this many sequential subtrees."
       (buffer-substring-no-properties beg end))))
 
 (defun trs/org-sync-file ()
+  "Sync all of the SYNCID's in a file"
   (interactive)
-    ;; Sync current entry first.  After that everything becomes identical to the entry furthest toward the end in the same file.
   (save-excursion
     (trs/org-sync)
     (goto-char (point-min))
     (while (re-search-forward "SYNCID" nil t)
       (trs/org-sync)
       (org-end-of-subtree))))
-	     
 
+;; Hooks and advice for limited automation
+
+(defun trs/org-sync-create-new-id ()
+  "Creates a new ID if the entry has a SYNCID but not ID.  Add the (id . syncid) pair to 'org-sync-locations-file' if necessary."
+  (interactive)
+  (if (trs/org-sync-syncid-get (point))
+      (progn
+	(org-id-get-create 'force)
+	trs/org-sync-syncid-get-create)))
+
+(advice-add 'org-copy :after #'trs/org-sync-create-new-id)
+
+(defun trs/after-manual-save-actions ()
+  "Used in `after-save-hook'.  Run this only when the save function has been called manually by the user (i.e. not automatically in the background).."
+  (when (and trs/org-sync-with-interactive-save (eq major-mode 'org-mode) (memq this-command '(save-buffer write-file)))
+    (trs/org-sync)))
+
+(add-hook 'after-save-hook 'trs/after-manual-save-actions)
 
 (defun trs/org-sync-property-state-change (&rest r)
   "Run trs/org-sync.  Used with org-trigger-hook to run trs/org-sync with any property state change."
-  (trs/org-sync))
+  (if trs/org-sync-with-property-change
+      (trs/org-sync)))
 
-(defun trs/org-sync-agenda-property-state-change (&rest r)
-  "Run trs/org-sync.  Used with org-trigger-hook to run trs/org-sync with any property state change."
-  (save-excursion
-    (trs/org-sync)))
-
-(defun trs/after-manual-save-actions ()
-  "Used in `after-save-hook'."
-  (when (and (eq major-mode 'org-mode) (memq this-command '(save-buffer write-file)))
-    (trs/org-sync)))
-;    (trs/org-sync-file)))
-
-(add-hook 'after-save-hook 'trs/after-manual-save-actions)
-
-(add-hook 'after-save-hook 'trs/after-manual-save-actions)
-(define-key org-mode-map (kbd "s-i") 'trs/org-sync)
-
-;; Disbled the hooks and advice below until I get this indent thing worked out.
-;; (add-hook 'org-after-tags-change-hook 'trs/org-sync)
- (add-hook 'org-trigger-hook 'trs/org-sync-property-state-change)
-;; (add-hook 'org-property-changed-functions 'trs/org-sync-property-state-change)
-
-;; (advice-add 'org-agenda-todo :after #'trs/org-sync-switch-back-to-agenda)
-;; (advice-add 'org-agenda-priority-up :after #'trs/org-sync-agenda-property-state-change)
-;; (advice-add 'org-agenda-priority-down :after #'trs/org-sync-agenda-property-state-change)
-;; (advice-add 'org-agenda-priority :after #'trs/org-sync-agenda-property-state-change)
-;; (advice-add 'org-agenda-set-tags :after #'trs/org-sync-agenda-property-state-change)
-;; (advice-add 'org-agenda-add-note :after #'trs/org-sync-agenda-property-state-change)
-;; (advice-add 'org-attach :after #'trs/org-sync-agenda-property-state-change)
-;; (advice-add 'org-agenda-schedule :after #'trs/org-sync-agenda-property-state-change)
-
+(add-hook 'org-trigger-hook 'trs/org-sync-property-state-change)
 (advice-add 'org-priority-up :after #'trs/org-sync-property-state-change)
 (advice-add 'org-priority-down :after #'trs/org-sync-property-state-change)
 (advice-add 'org-priority :after #'trs/org-sync-property-state-change)
-(advice-add 'org-set-tags-command :after #''trs/org-sync-property-state-change)
+(advice-add 'org-set-tags-command :after #'trs/org-sync-property-state-change)
 
 
-;; Everything bleow this point is legacy code
-(defun trs/org-sync-search-and-replace-using-agenda (current-id)
-  "Generate an agenda view with a list of the entries that have the 'current-id' SYNCID.  Iterate through them and change them to match the current (altered) entry."
-  (let ((agenda-iteration 1)
-	(matched-agenda-buffer nil)
-	(indent-level nil)
-	(original-agenda-buffer (get-buffer "*Org Agenda*"))
-	(matched-agenda-buffer nil))
-					;  (setq agenda-iteration 1)
-    (if original-agenda-buffer
-	(progn
-	  (switch-to-buffer original-agenda-buffer)
-	  (rename-uniquely)))
-    (org-tags-view nil (concat "SYNCID=\"" current-id "\""))
-    (setq matched-agenda-buffer (buffer-name))
-    (while (not (eq (point) (point-max)))
-      (trs/org-sync-goto-agenda-entry agenda-iteration)
-      (setq indent-level (org-current-level))
-      (trs/org-sync-update-entry)
-      (trs/org-sync-correct-updated-entry-indentation indent-level)
-      (message "replaced entry")
-      (trs/org-sync-position-at-beginning-of-next-agenda-line matched-agenda-buffer agenda-iteration)
-      (setq agenda-iteration (+ agenda-iteration 1)))
-    (kill-buffer matched-agenda-buffer)
-    (if original-agenda-buffer
-	(progn
-	  (switch-to-buffer original-agenda-buffer)
-	  (rename-buffer "*Org Agenda*")))))
+(defun trs/org-sync-legacy ()
+  "Change other entries with the same SYNCID as the current entry such that they match the current entry."
+;  (interactive)
+  (let ((changed-buffer (current-buffer))
+	(current-id (org-entry-get (point) "SYNCID" t)))
+    (setq org-changed-subtree (trs/org-get-subtree))
+    (if current-id
+	(let ((id (org-id-get (point) 'create)))
+	  (trs/org-sync-search-and-replace-legacy current-id id changed-buffer org-changed-subtree))
+      (if (called-interactively-p)
+	  (message "This item is not set up to sync.  Please run 'trs/org-sync-syncid-get-create' then copy the entry to other places")))
+    ))
 
-(defun trs/org-sync-position-at-beginning-of-next-agenda-line (matched-agenda-buffer agenda-iteration)
-  "Position cursor at the beginning of the next entry line.  This will be the end of the file if the last entry has been processed."
-  (switch-to-buffer matched-agenda-buffer)
-  (beginning-of-buffer)
-  (org-agenda-next-item agenda-iteration)
-  (org-agenda-next-line))
-
-(defun trs/org-sync-goto-agenda-entry (agenda-iteration)
-  "Goto the entry represented by the next item in the agenda buffer."
-  ;Have to use this hack with the 'agenda-iteration' iterator because for some reason
-  ;the cursor jumps around when switching to and from the agenda buffer.
-  (beginning-of-buffer)
-  (org-agenda-next-item agenda-iteration)
-  (org-agenda-goto)
-  (trs/goto-entry-beginning))
+(defun trs/org-sync-search-and-replace-legacy (current-id id changed-buffer org-changed-subtree)
+  (let ((org-search-files (org-agenda-files nil 'ifmode))
+	(org-search-file nil)
+	(org-search-file-buffer nil)
+	(updated-entry-indent-level nil))
+    (while (setq org-search-file (pop org-search-files))
+      (setq org-search-file-buffer (make-indirect-buffer (get-file-buffer org-search-file) "delete-me.org"))
+      (unless (eq changed-buffer org-search-file-buffer) 
+	(switch-to-buffer org-search-file-buffer)
+	(org-mode)
+	(outline-show-all)
+	(save-excursion
+	  (goto-char (point-min))
+	  (while (re-search-forward current-id nil t)
+	    (org-show-subtree)
+	    (trs/org-sync-syncid-get-create)
+	    (setq id (org-id-get (point)))
+	    (org-narrow-to-subtree)
+	    (setq updated-entry-indent-level (org-current-level))
+	    (trs/org-sync-update-entry org-changed-subtree)
+	    (org-entry-put (point) "ID" id)
+	    (let ((following-subtrees (buffer-substring-no-properties (point) (point-max))))
+	      (trs/org-sync-correct-updated-entry-indentation updated-entry-indent-level)
+	      (org-end-of-subtree)
+	      (delete-blank-lines)
+	      (widen)
+	      )))
+	(kill-buffer org-search-file-buffer)))))
