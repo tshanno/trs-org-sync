@@ -24,13 +24,15 @@
   (let ((changed-buffer (current-buffer))
 	(current-id (org-entry-get (point) "SYNCID" t))
 	(id (org-entry-get (point) "ID" t)))
-    (message id)
-    (save-window-excursion 
-      (setq org-changed-subtree (trs/org-get-subtree))
-      (if (and current-id id)
-	  (trs/org-sync-search-and-replace current-id id changed-buffer org-changed-subtree)
-	(if (called-interactively-p)
-	    (message "This item is not set up to sync.  Please run 'trs/org-sync-syncid-get-create' then copy the entry to other places"))))))
+    (if current-id
+	(save-window-excursion
+	  (save-excursion
+	  (org-id-goto id)
+	  (setq org-changed-subtree (trs/org-get-subtree))
+	  (if (and current-id id)
+	      (trs/org-sync-search-and-replace current-id id changed-buffer org-changed-subtree)
+	    (if (called-interactively-p)
+		(message "This item is not set up to sync.  Please run 'trs/org-sync-syncid-get-create' then copy the entry to other places"))))))))
 
 (defun trs/org-sync-get-sync-locations-from-file ()
   "Get the list of id-syncid pairs from 'org-syncid-locations-file' and return them"
@@ -44,30 +46,31 @@
 	(org-search-file-buffer nil)
 	(updated-entry-indent-level nil)
 	(following-subtrees nil)
-	(org-sync-locations (trs/org-sync-get-sync-locations-from-file)))
+	(org-sync-locations (trs/org-sync-get-sync-locations-from-file))
+	(beginning-of-entry nil))
       (dolist (pair org-sync-locations)
-	(if (equal current-id (cdr pair))
+	(if (and (equal current-id (cdr pair)) (org-id-find (car pair)))
 	    (progn
 	      (org-id-goto (car pair))
 	      (setq org-search-file-buffer (make-indirect-buffer (get-file-buffer (buffer-name)) "delete-me.org"))
-	      (unwind-protect 
-		  (unless (eq changed-buffer org-search-file-buffer) 
+	      (unwind-protect
+		  (progn
 		    (switch-to-buffer org-search-file-buffer)
 		    (org-mode)
 		    (outline-show-all)
-		    (goto-char (point-min))
-		    (while (re-search-forward current-id nil t)
-		      (org-show-subtree)
-		      (org-narrow-to-subtree)
-		      (setq updated-entry-indent-level (org-current-level))
-		      (trs/org-sync-update-entry org-changed-subtree)
-		      (org-entry-put (point) "ID" (car pair))
-		      (setq following-subtrees (buffer-substring-no-properties (point) (point-max)))
-		      (trs/org-sync-correct-updated-entry-indentation updated-entry-indent-level)
-		      (org-end-of-subtree)
-		      (delete-blank-lines)
-		      (widen)))
-		  (kill-buffer org-search-file-buffer)))))))
+		    (org-show-subtree)
+		    (org-narrow-to-subtree)
+		    (setq beginning-of-entry (point))
+		    (setq updated-entry-indent-level (org-current-level))
+		    (trs/org-sync-update-entry org-changed-subtree)
+		    (setq following-subtrees (buffer-substring-no-properties (point) (point-max)))
+		    (trs/org-sync-correct-updated-entry-indentation updated-entry-indent-level)
+		    (goto-char beginning-of-entry)
+		    (org-entry-put (point) "ID" (car pair))
+		    (org-end-of-subtree)
+		    (delete-blank-lines)
+		    (widen))
+		(kill-buffer org-search-file-buffer)))))))
 
 (defun trs/org-sync-correct-updated-entry-indentation (updated-entry-indent-level)
   "Correct the indentation level of the new item so that it matched the level of the item before it was updated."
@@ -195,7 +198,7 @@ With arg N, get this many sequential subtrees."
   (if (trs/org-sync-syncid-get (point))
       (progn
 	(org-id-get-create 'force)
-	trs/org-sync-syncid-get-create)))
+	(trs/org-sync-syncid-get-create))))
 
 (advice-add 'org-copy :after #'trs/org-sync-create-new-id)
 
