@@ -21,18 +21,27 @@
 (defun trs/org-sync ()
   "Change other entries with the same SYNCID as the current entry such that they match the current entry."
   (interactive)
-  (let ((changed-buffer (current-buffer))
-	(current-id (org-entry-get (point) "SYNCID" t))
-	(id (org-entry-get (point) "ID" t)))
-    (if current-id
-	(save-window-excursion
-	  (save-excursion
-	  (org-id-goto id)
-	  (setq org-changed-subtree (trs/org-get-subtree))
-	  (if (and current-id id)
-	      (trs/org-sync-search-and-replace current-id id changed-buffer org-changed-subtree)
-	    (if (called-interactively-p)
-		(message "This item is not set up to sync.  Please run 'trs/org-sync-syncid-get-create' then copy the entry to other places"))))))))
+;    (save-excursion
+      (let ((initial-point (point))
+	    (hd-marker (org-get-at-bol 'org-hd-marker)))
+	(let ((changed-buffer (current-buffer))
+	      (current-id (org-entry-get (point) "SYNCID" t))
+	      (id (org-entry-get (point) "ID" t)))
+	  (goto-char initial-point)
+	  (if current-id
+  (save-window-excursion
+	(save-excursion
+	      (org-id-goto id)
+	    (setq org-changed-subtree (trs/org-get-subtree))
+	    (if (and current-id id)
+		(trs/org-sync-search-and-replace current-id id changed-buffer org-changed-subtree)
+	      (if (called-interactively-p)
+		  (message "This item is not set up to sync.  Please run 'trs/org-sync-syncid-get-create' then copy the entry to other places")))))))
+	(goto-char initial-point)))
+;    (goto-char initial-point)
+;    (when (memq this-command '(org-agenda-todo))
+;      (org-agenda-redo-all t))
+
 
 (defun trs/org-sync-get-sync-locations-from-file ()
   "Get the list of id-syncid pairs from 'org-syncid-locations-file' and return them"
@@ -211,54 +220,14 @@ With arg N, get this many sequential subtrees."
 
 (defun trs/org-sync-property-state-change (&rest r)
   "Run trs/org-sync.  Used with org-trigger-hook to run trs/org-sync with any property state change."
-  (if trs/org-sync-with-property-change
+  (if (and trs/org-sync-with-property-change (memq this-command '(org-todo org-priority-up org-priority-down org-priority org-set-tags-command)))
       (trs/org-sync)))
 
-(add-hook 'org-trigger-hook 'trs/org-sync-property-state-change)
+;;(add-hook 'org-trigger-hook 'trs/org-sync-property-state-change)
+(advice-add 'org-todo :after #'trs/org-sync-property-state-change)
 (advice-add 'org-priority-up :after #'trs/org-sync-property-state-change)
 (advice-add 'org-priority-down :after #'trs/org-sync-property-state-change)
 (advice-add 'org-priority :after #'trs/org-sync-property-state-change)
 (advice-add 'org-set-tags-command :after #'trs/org-sync-property-state-change)
-
-
-(defun trs/org-sync-legacy ()
-  "Change other entries with the same SYNCID as the current entry such that they match the current entry."
-;  (interactive)
-  (let ((changed-buffer (current-buffer))
-	(current-id (org-entry-get (point) "SYNCID" t)))
-    (setq org-changed-subtree (trs/org-get-subtree))
-    (if current-id
-	(let ((id (org-id-get (point) 'create)))
-	  (trs/org-sync-search-and-replace-legacy current-id id changed-buffer org-changed-subtree))
-      (if (called-interactively-p)
-	  (message "This item is not set up to sync.  Please run 'trs/org-sync-syncid-get-create' then copy the entry to other places")))
-    ))
-
-(defun trs/org-sync-search-and-replace-legacy (current-id id changed-buffer org-changed-subtree)
-  (let ((org-search-files (org-agenda-files nil 'ifmode))
-	(org-search-file nil)
-	(org-search-file-buffer nil)
-	(updated-entry-indent-level nil))
-    (while (setq org-search-file (pop org-search-files))
-      (setq org-search-file-buffer (make-indirect-buffer (get-file-buffer org-search-file) "delete-me.org"))
-      (unless (eq changed-buffer org-search-file-buffer) 
-	(switch-to-buffer org-search-file-buffer)
-	(org-mode)
-	(outline-show-all)
-	(save-excursion
-	  (goto-char (point-min))
-	  (while (re-search-forward current-id nil t)
-	    (org-show-subtree)
-	    (trs/org-sync-syncid-get-create)
-	    (setq id (org-id-get (point)))
-	    (org-narrow-to-subtree)
-	    (setq updated-entry-indent-level (org-current-level))
-	    (trs/org-sync-update-entry org-changed-subtree)
-	    (org-entry-put (point) "ID" id)
-	    (let ((following-subtrees (buffer-substring-no-properties (point) (point-max))))
-	      (trs/org-sync-correct-updated-entry-indentation updated-entry-indent-level)
-	      (org-end-of-subtree)
-	      (delete-blank-lines)
-	      (widen)
-	      )))
-	(kill-buffer org-search-file-buffer)))))
+(advice-add 'org-shiftup :after #'trs/org-sync-property-state-change)
+(advice-add 'org-shiftdown :after #'trs/org-sync-property-state-change)
